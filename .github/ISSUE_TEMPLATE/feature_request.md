@@ -1,16 +1,12 @@
 ---
 name: Feature request
-about: Suggest an idea for this project
+about: Suggest a change to Repletes
 ---
 
-**Is your feature request related to a problem? Please describe.**
-A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+Check the "Not included" list in the [README](https://github.com/Smiduweorc/Repletes#not-included) and [guides/design.md](https://github.com/Smiduweorc/Repletes/blob/master/guides/design.md) first. Retries, single-flight and key hashing are out of scope.
 
-**Describe the solution you'd like**
-A clear and concise description of what you want to happen.
+**The problem you hit, in the project where you hit it**
 
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
+**What you would like Repletes to do**
 
-**Additional context**
-Add any other context or screenshots about the feature request here.
+**What you tried instead**

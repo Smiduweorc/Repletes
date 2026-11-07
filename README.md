@@ -1,47 +1,97 @@
 # Repletes
 ![repletes logo](https://github.com/Smiduweorc/Repletes/raw/master/assets/logo.png)
 
-Repletes is a cache policy engine for arbitrary async computations. You supply the key, store, and freshness/retention windows; Repletes decides whether to serve, refresh, replace, or rethrow. Its stale-while-revalidate and stale-if-error semantics are inspired by RFC 5861.
+A cache for the results of async calls that tells you whether you got a fresh value or an old one kept because the upstream failed.
 
-It has no dependencies, no `node:` imports, and one entry point.
+You give it a key, a store and the time windows. It decides whether to serve the cached value, refresh it in the background, call the action, or fall back to the old value when the action throws. The windows are RFC 5861's stale-while-revalidate and stale-if-error. No runtime dependencies.
 
-## Repletes Does/Does Nots
+## Install
 
-| Repletes Owns | Not Repletes |
-|---|---|
-| The read decision: fresh -> serve, stale -> serve and refresh behind, retained -> serve only if the action failed, otherwise miss | Key derivation, normalization, hashing |
-| The windows, measured from storedAt against a clock you can swap in tests | Eviction for capacity, which is the store's |
-| Retention math: freshFor + max(swr, sie) going into the store, re-checked coming out | Deciding when to invalidate, which is the caller's |
-| Background refresh: one per key, never awaited, never an unhandled rejection, existing entry left intact if it fails | Retries, deadlines, dedup, which are Firefly's |
-| Stale-if-error: catch, decide, rethrow the original error untouched | Hash-as-key |
-| Writing once per completed action, and never writing a failure unless asked | Transport: fetching, serialising responses, talking to a store |
-| The Store interface, plus MemoryStore | |
-| Namespace and version prefixing on keys | |
-| forget(key) and clear() as mechanisms | |
-| onEvent | |
+Node 22 or newer, ESM only, types included.
 
-### Design Sidenotes
-When I was working on my own project, I felt that I was perhaps too pedantic when it came to how stale-if-error was handled. I wanted something that could clearly communicate whether something returned was fresh or if it was just fallback stale data due to failures upstream somewhere. I want people to think of this library more so for the cache policies and less so the storage mechanism. This is NOT an HTTP cache, and it does not ship a transport: `fromCacheControl` reads `Cache-Control` off anything shaped like a response, but fetching, serialising and storing are yours.
+```sh
+npm install repletes
+```
 
-### About keys
+## Example
 
-Repletes doesn't care what the key looks like. A URL, a UUID, whatever: it all works the same. No hashing, no normalization, no derivation logic lives here.
+```ts
+import { Cache, MemoryStore, fixed } from "repletes";
 
-If you're using content-addressed keys (where the key is derived from the content), that's on you. The upside: the entry can never go stale since the content determines the key. The downside: Repletes has no way to detect a collision if you hash wrong. That risk is yours now, not ours.
+interface User {
+	id: string;
+	name: string;
+}
 
-### API details
+const users = new Cache<User>({
+	store: new MemoryStore({ maxEntries: 1_000 }),
+	freshness: fixed({
+		freshFor: 30_000,
+		staleWhileRevalidate: 60_000,
+		staleIfError: 300_000,
+	}),
+	namespace: "users",
+	version: 1,
+});
 
-- `wrap(key, action)` returns the value; `read(key, action)` returns the value plus the state it came from, so a caller can tell a fresh answer from one that survived an upstream failure.
-- `peek(key)` reads the store without calling the action and without triggering a refresh.
-- `forget(key)` and `clear()` are mechanisms, not policy. `clear()` throws `clear-unsupported` on a store that does not implement it.
-- `settled()` resolves once no background refresh is in flight. For tests and for shutdown; a caller never has to await a refresh to get an answer.
-- Keys are plain strings. Hashing a request body is async, so if your key derives from a body, await it yourself before calling `wrap`.
+async function loadUser(id: string): Promise<User> {
+	const res = await fetch(`https://api.example.com/users/${id}`);
+	if (!res.ok) throw new Error(`upstream returned ${res.status}`);
+	return (await res.json()) as User;
+}
 
-### Things Repletes deliberately does not do
+const id = "1";
+const { value, state, age } = await users.read(`user:${id}`, () => loadUser(id));
 
-- **No single-flight on a miss.** Concurrent misses on the same key each call the action. Only the background refresh behind a stale read is deduplicated, one per key. Coalescing in-flight work is a concurrency concern, and it belongs in the layer that also owns retries and deadlines.
-- **No way to prime the cache directly.** There is no `put`. Every stored value is the result of an action that ran, so an entry's windows always describe something that actually completed.
-- **No capacity policy of its own.** `MemoryStore` evicts LRU past `maxEntries`, but that is the store's business. The read decision is made from the entry's own windows, never from whether a store still happens to hold it.
+if (state === "retained") {
+	console.warn(`upstream failed, serving a user from ${age}ms ago`);
+}
+```
 
-### Random Lore
-Repletes are not actually a species of insects and the logo isn't really accurate. Repletes refer to a caste of ants that act as living food storage tanks for their colony. This happens to only rough 20 different species out of the thousands of different ant species.
+With these numbers a user is served from memory for 30 seconds, then for 60 more seconds while a refresh runs behind it. After that, up to 5.5 minutes old (`freshFor + staleIfError`), it is served only if `loadUser` throws.
+
+`wrap` does the same and returns just the value. Call `forget(key)` after a write that makes the cached value wrong, and `settled()` in tests or on shutdown to wait for background refreshes. To take the windows from the upstream's `Cache-Control` header, use `fromCacheControl` instead of `fixed` ([example](guides/api.md#freshness)).
+
+## How it works
+
+Every entry stores its own windows, in milliseconds from when it was written:
+
+| Age of the entry | State | What a read does |
+|---|---|---|
+| up to `freshFor` | `fresh` | Serves it. The action does not run. |
+| up to `freshFor + staleWhileRevalidate` | `stale` | Serves it now and refreshes in the background, one refresh per key. |
+| up to `freshFor + staleIfError` | `retained` | Calls the action and waits. Serves the old value only if the action throws. |
+| past both, or nothing stored | `miss` | Calls the action. If it throws, your error is rethrown unchanged. |
+
+How retention and failed refreshes are handled is in [Design and scope](guides/design.md).
+
+## Not included
+
+- HTTP caching. `fromCacheControl` reads `Cache-Control` off anything shaped like a response; fetching, serialising and storing are yours.
+- Retries, deadlines, rate limits and single-flight. Use [Firefly](https://github.com/Smiduweorc/firefly), inside the action, so a cache hit never uses a retry or rate-limit slot.
+- Describing the HTTP API the action calls. Use [Aphid](https://github.com/Smiduweorc/Aphid-template).
+- Writing values into the cache directly. There is no `put`.
+- Default windows. There are none; you pick them per kind of data.
+- Key hashing or normalisation. Do it before `wrap`.
+
+## Known quirks
+
+- Concurrent misses on the same key each call the action. Only background refreshes are deduplicated.
+- `clear()` empties the whole store. If several caches share one store, it clears all of them, whatever their namespace.
+- `MemoryStore` is per process. Two processes with their own `MemoryStore` do not see each other's entries.
+- Store errors do not fail a read. A failed `get` counts as a miss and a failed `set` skips the write; both are reported only through `onEvent`.
+
+## Documentation
+
+- [API guide](guides/api.md)
+- [Design and scope](guides/design.md)
+- [API reference](https://smiduweorc.github.io/Repletes/), generated by TypeDoc
+- [Motivation](Motivation.md), the project this was extracted from
+
+## License
+
+[ISC](LICENSE)
+
+## Lore
+
+Repletes are not a species of insect, and the logo isn't really accurate. Repletes are a caste of ants that hang from the nest roof as living food storage for the colony. Only about 20 of the thousands of ant species have them.
