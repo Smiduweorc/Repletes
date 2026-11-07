@@ -54,6 +54,23 @@ test("no-cache means zero freshness, not no storage", () => {
 	assert.equal(windows?.staleIfError, 30_000);
 });
 
+test("no-cache is never served while it refreshes", () => {
+	const windows = freshness(value("no-cache, stale-while-revalidate=60"));
+	assert.equal(windows?.freshFor, 0);
+	assert.equal(windows?.staleWhileRevalidate, 0);
+});
+
+test("no-cache ignores the caller's defaults for serving stale", () => {
+	const withDefaults = fromCacheControl({
+		fallback: WINDOWS,
+		staleWhileRevalidate: 5_000,
+		staleIfError: 7_000,
+	});
+	const windows = withDefaults(value("no-cache"));
+	assert.equal(windows?.staleWhileRevalidate, 0);
+	assert.equal(windows?.staleIfError, 0);
+});
+
 test("only the caller's storable statuses are written down", () => {
 	assert.equal(freshness(value("max-age=60", 500)), undefined);
 	assert.equal(freshness(value("max-age=60", 404)), undefined);

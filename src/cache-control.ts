@@ -104,10 +104,20 @@ export function fromCacheControl<T extends HasCacheControl>(
 			? (seconds(directives, "s-maxage") ?? seconds(directives, "max-age"))
 			: seconds(directives, "max-age");
 
+		// RFC 9111 5.2.2.4: a no-cache response is never used without a
+		// successful revalidation, so nothing may be served while a refresh runs.
+		// Only the response's own stale-if-error can permit serving it stale
+		// (4.2.4); the caller's defaults cannot.
+		if (directives.has("no-cache")) {
+			return assertWindows({
+				freshFor: 0,
+				staleWhileRevalidate: 0,
+				staleIfError: seconds(directives, "stale-if-error") ?? 0,
+			});
+		}
+
 		return assertWindows({
-			freshFor: directives.has("no-cache")
-				? 0
-				: (lifetime ?? fallback.freshFor),
+			freshFor: lifetime ?? fallback.freshFor,
 			staleWhileRevalidate:
 				seconds(directives, "stale-while-revalidate") ??
 				options.staleWhileRevalidate ??
