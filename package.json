@@ -1,6 +1,6 @@
 {
 	"name": "repletes",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "A cache policy engine for arbitrary async computations. You supply the key, the store and the windows; repletes decides whether to serve, refresh, replace or rethrow.",
 	"type": "module",
 	"main": "dist/index.js",

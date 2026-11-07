@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-11-07
+
+### Bug Fixes
+
+- Corrected dist behaviour
+- Corrected no-cache behaviour while mid refresh
+
+### Documentation
+
+- Revamped documentation for repletes
+
+### Miscellaneous Tasks
+
+- Updated README
+- Added a simple page workflow
+- Updated URL for package.json
+
+### Security
+
+- Skip dependabot deps-dev commits and match security in any case
+
 ## [1.0.0] - 2026-08-30
 
 ### Bug Fixes
