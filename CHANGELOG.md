@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - 2026-11-22
+
+### Features
+
+- [**breaking**] Scope clear() to the cache's namespace
+
+### Miscellaneous Tasks
+
+- Add manually started staged npm publish workflow
+
 ## [1.1.0] - 2026-11-07
 
 ### Bug Fixes
