@@ -24,6 +24,26 @@ function build(options?: {
 	return { cache, time };
 }
 
+/** A promise plus the switch that settles it, for holding an action open. */
+function gate<V>(): {
+	promise: Promise<V>;
+	open: (value: V) => void;
+	fail: (error: unknown) => void;
+	} {
+	let open: (value: V) => void = () => {};
+	let fail: (error: unknown) => void = () => {};
+	const promise = new Promise<V>((resolve, reject) => {
+		open = resolve;
+		fail = reject;
+	});
+	return { promise, open, fail };
+}
+
+/** Lets every pending microtask run, so a started read has reached its action. */
+async function turn(): Promise<void> {
+	await new Promise((resolve) => setImmediate(resolve));
+}
+
 function counter(value: string): {
 	action: () => Promise<string>;
 	calls: () => number;
@@ -98,6 +118,34 @@ test("concurrent stale reads produce exactly one refresh", async () => {
 	);
 	await cache.settled();
 	assert.equal(calls(), 2, "one fill plus one refresh");
+});
+
+test("concurrent misses on one key each call the action", async () => {
+	const { cache } = build();
+	const { action, calls } = counter("v");
+
+	const reads = await Promise.all([cache.read("k", action), cache.read("k", action)]);
+
+	assert.equal(calls(), 2, "no single-flight here; that is Firefly's");
+	assert.deepEqual(
+		reads.map((read) => read.state),
+		["miss", "miss"]
+	);
+});
+
+test("an action that throws synchronously is rethrown, not cached, and retried next read", async () => {
+	const events: Event[] = [];
+	const { cache } = build({ onEvent: (event) => events.push(event) });
+	const original = new Error("thrown, not rejected");
+
+	await assert.rejects(
+		cache.wrap("k", () => {
+			throw original;
+		}),
+		(error: unknown) => error === original
+	);
+	assert.equal(events.filter((event) => event.type === "action-error").length, 1);
+	assert.equal(await cache.wrap("k", async () => "retried"), "retried");
 });
 
 test("a read concurrent with a refresh is answered from the entry, not the refresh", async () => {
@@ -282,7 +330,7 @@ test("peek reads without calling anything or triggering a refresh", async () => 
 	assert.equal(await cache.peek("k"), undefined, "beyond retention");
 });
 
-test("forget drops one key, clear drops the store", async () => {
+test("forget drops one key, clear on an unnamespaced cache drops the store", async () => {
 	const { cache } = build();
 
 	await cache.wrap("a", async () => "a");
@@ -296,6 +344,158 @@ test("forget drops one key, clear drops the store", async () => {
 	assert.equal(await cache.peek("b"), undefined);
 });
 
+test("clear drops only its own namespace, clearAll drops everything", async () => {
+	const time = clock();
+	const store = new MemoryStore<string>({ maxEntries: 8, now: time.now });
+	const users = build({ store, namespace: "users" }).cache;
+	const usersV2 = build({ store, namespace: "users", version: "2" }).cache;
+	const orders = build({ store, namespace: "orders" }).cache;
+
+	await users.wrap("1", async () => "u");
+	await usersV2.wrap("1", async () => "u2");
+	await orders.wrap("1", async () => "o");
+
+	await usersV2.clear();
+	assert.equal(await usersV2.peek("1"), undefined);
+	assert.equal((await users.peek("1"))?.value, "u", "an older version is its own cache");
+	assert.equal((await orders.peek("1"))?.value, "o");
+
+	await orders.clear();
+	assert.equal(await orders.peek("1"), undefined);
+	assert.equal((await users.peek("1"))?.value, "u");
+
+	await orders.clearAll();
+	assert.equal(store.size, 0);
+});
+
+test("namespace and version prefixes never overlap", async () => {
+	const time = clock();
+	const store = new MemoryStore<string>({ maxEntries: 16, now: time.now });
+	const plain = build({ store, namespace: "users" }).cache;
+	const v1 = build({ store, namespace: "users", version: "1" }).cache;
+	const v2 = build({ store, namespace: "users", version: "2" }).cache;
+	const versionOnly = build({ store, version: "1" }).cache;
+
+	// Without both slots, plain's "1:k" and v1's "k" would be the same key.
+	await plain.wrap("1:k", async () => "plain");
+	await v1.wrap("k", async () => "v1");
+	await v2.wrap("k", async () => "v2");
+	await versionOnly.wrap("k", async () => "version-only");
+	assert.equal((await plain.peek("1:k"))?.value, "plain");
+	assert.equal((await v1.peek("k"))?.value, "v1");
+
+	await plain.clear();
+	assert.equal(await plain.peek("1:k"), undefined);
+	assert.equal((await v1.peek("k"))?.value, "v1", "a namespace clear spares its versions");
+	assert.equal((await v2.peek("k"))?.value, "v2");
+
+	await v1.clear();
+	assert.equal(await v1.peek("k"), undefined);
+	assert.equal((await v2.peek("k"))?.value, "v2", "version 1 spares version 2");
+	assert.equal((await versionOnly.peek("k"))?.value, "version-only");
+});
+
+test("a namespace or version that could blur a prefix is refused", () => {
+	assert.throws(() => build({ namespace: "a:b" }), refusal("invalid-namespace"));
+	assert.throws(() => build({ namespace: "" }), refusal("invalid-namespace"));
+	assert.throws(() => build({ version: "1:2" }), refusal("invalid-namespace"));
+	assert.throws(() => build({ version: "" }), refusal("invalid-namespace"));
+});
+
+test("an action in flight across clear() does not write its result back", async () => {
+	const events: Event[] = [];
+	const { cache } = build({ namespace: "users", onEvent: (event) => events.push(event) });
+	const action = gate<string>();
+
+	const before = cache.read("k", async () => action.promise);
+	await turn();
+	await cache.clear();
+	assert.equal(await cache.wrap("k", async () => "after"), "after");
+	action.open("before");
+
+	assert.equal((await before).value, "before", "its caller still gets an answer");
+	assert.equal((await cache.peek("k"))?.value, "after", "the late result did not overwrite");
+	assert.ok(
+		events.some((event) => event.type === "skip" && event.reason === "invalidated")
+	);
+});
+
+test("an action in flight across forget() does not write its result back", async () => {
+	const { cache } = build();
+	const action = gate<string>();
+
+	const before = cache.read("k", async () => action.promise);
+	await turn();
+	await cache.forget("k");
+	action.open("before");
+
+	assert.equal((await before).value, "before");
+	assert.equal(await cache.peek("k"), undefined);
+});
+
+test("forget() leaves actions running for other keys alone", async () => {
+	const { cache } = build();
+	const action = gate<string>();
+
+	const other = cache.read("other", async () => action.promise);
+	await turn();
+	await cache.forget("k");
+	action.open("kept");
+	await other;
+
+	assert.equal((await cache.peek("other"))?.value, "kept");
+});
+
+test("a refresh in flight across clearAll() does not write its result back", async () => {
+	const { cache, time } = build();
+	const action = gate<string>();
+
+	await cache.wrap("k", async () => "held");
+	time.advance(150);
+	await cache.read("k", async () => action.promise);
+	await cache.clearAll();
+	action.open("refreshed");
+	await cache.settled();
+
+	assert.equal(await cache.peek("k"), undefined);
+});
+
+test("a refresh cut loose by forget() does not block the next refresh", async () => {
+	const { cache, time } = build();
+	const stuck = gate<string>();
+	const { action, calls } = counter("next");
+
+	await cache.wrap("k", async () => "held");
+	time.advance(150);
+	await cache.read("k", async () => stuck.promise);
+	await cache.forget("k");
+
+	await cache.wrap("k", async () => "again");
+	time.advance(150);
+	await cache.read("k", action);
+	assert.equal(calls(), 1, "a new refresh started while the old one still hangs");
+
+	stuck.open("late");
+	await cache.settled();
+	assert.equal((await cache.peek("k"))?.value, "next-1");
+});
+
+test("clear on a namespaced cache refuses a store without deletePrefix", async () => {
+	let cleared = false;
+	const store: Store<string> = {
+		get: async () => undefined,
+		set: async () => {},
+		delete: async () => {},
+		clear: async () => {
+			cleared = true;
+		},
+	};
+	const { cache } = build({ store, namespace: "users" });
+
+	await assert.rejects(cache.clear(), refusal("clear-unsupported"));
+	assert.equal(cleared, false, "never falls back to emptying the whole store");
+});
+
 test("clear on a store without one is a type error, not a silent no-op", async () => {
 	const store: Store<string> = {
 		get: async () => undefined,
@@ -305,6 +505,7 @@ test("clear on a store without one is a type error, not a silent no-op", async (
 	const { cache } = build({ store });
 
 	await assert.rejects(cache.clear(), refusal("clear-unsupported"));
+	await assert.rejects(cache.clearAll(), refusal("clear-unsupported"));
 });
 
 test("namespace and version prefix the key", async () => {
@@ -317,11 +518,12 @@ test("namespace and version prefix the key", async () => {
 		set: async () => {},
 		delete: async () => {},
 	};
-	const { cache } = build({ store, namespace: "orders", version: "v2" });
+	await build({ store, namespace: "orders", version: "v2" }).cache.wrap("42", async () => "x");
+	await build({ store, namespace: "orders" }).cache.wrap("42", async () => "x");
+	await build({ store, version: "v2" }).cache.wrap("42", async () => "x");
+	await build({ store }).cache.wrap("42", async () => "x");
 
-	await cache.wrap("42", async () => "x");
-
-	assert.deepEqual(keys, ["orders:v2:42"]);
+	assert.deepEqual(keys, ["orders:v2:42", "orders::42", ":v2:42", "42"]);
 });
 
 test("an empty key is refused", async () => {
@@ -342,11 +544,23 @@ test("a store failure is a miss on read and a no-op on write", async () => {
 			throw new Error("redis down");
 		},
 	};
-	const { cache } = build({ store, onEvent: (event) => events.push(event) });
+	const { cache } = build({
+		store,
+		namespace: "users",
+		onEvent: (event) => events.push(event),
+	});
 
 	assert.equal(await cache.wrap("k", async () => "v"), "v");
 	assert.equal(await cache.peek("k"), undefined);
 	await cache.forget("k");
+
+	const first = events.find((event) => event.type === "store-error");
+	assert.equal(first?.type === "store-error" && first.key, "users::k");
+	assert.equal(first?.type === "store-error" && first.namespace, "users");
+	assert.equal(
+		first?.type === "store-error" && (first.error as Error).message,
+		"redis down"
+	);
 
 	assert.deepEqual(
 		events

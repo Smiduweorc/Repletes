@@ -5,6 +5,7 @@
 export type RepletesErrorCode =
 	| "invalid-windows"
 	| "invalid-key"
+	| "invalid-namespace"
 	| "invalid-capacity"
 	| "clear-unsupported";
 

@@ -18,6 +18,18 @@ Repletes doesn't care what the key looks like. A URL, a UUID, whatever: it all w
 
 If you're using content-addressed keys (where the key is derived from the content), that's on you. The upside: the entry can never go stale, since the content determines the key. The downside: Repletes has no way to detect a collision if you hash wrong. That risk is yours now, not ours.
 
+## Clearing a shared store
+
+Several caches can share one store under different namespaces, so `clear()` deletes only the calling cache's prefix and emptying the whole store is a separate call, `clearAll()`. A namespaced `clear()` on a store without `deletePrefix` throws instead of falling back to `clear`, because that fallback is the cross-cache wipe the split exists to prevent.
+
+The prefix always has two slots once either is set (`users::`, `users:2:`) and neither may contain `:`. With one slot, `users:` would be the start of `users:2:`, and clearing the unversioned cache would delete every versioned one.
+
+An action that was already running when its key was dropped does not write its result. Without that, a slow call started before `clear()` would finish after it and put the old value back.
+
+## Store failures
+
+A cache is an optimisation, so a store that throws turns a read into a miss and a write into a skip, and the caller still gets the action's result. The failure is reported as a `store-error` event and nowhere else: Repletes does not log, so an application that needs to know its store is down passes `onEvent`.
+
 ## No single-flight, no `put`
 
 Concurrent misses on the same key each call the action. Only the background refresh behind a stale read is deduplicated, one per key. Coalescing in-flight work belongs in the layer that also owns retries and deadlines, which is Firefly.

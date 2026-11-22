@@ -10,10 +10,10 @@ Everything is exported from the package root. All durations are milliseconds, me
 |---|---|
 | `store` | Where entries live. See [Stores](#stores). |
 | `freshness` | Decides whether a completed value is stored, and with which windows. See [Freshness](#freshness). |
-| `namespace` | Prefixed onto every key as `namespace:`. |
+| `namespace` | Prefixed onto every key. See [Keys](#keys). |
 | `version` | Prefixed after the namespace. Bump it to orphan every entry written in an old shape. |
 | `now` | The clock. Defaults to `Date.now`. Swap it in tests. |
-| `onEvent` | Receives every [event](#events). A listener that throws is ignored. |
+| `onEvent` | Receives every [event](#events). A listener that throws is ignored. Store failures are reported nowhere else. |
 
 Construct one cache per kind of value and share it. Keep it outside your retry and rate-limit layers, so that only a miss turns into a call.
 
@@ -42,14 +42,21 @@ await cache.wrap(key, async (previous) => {
 
 A key is a non-empty string, or any method that takes one throws `invalid-key`. The namespace and version are prefixed; nothing else is done to it. If your key comes from hashing a request body, await the hash before calling `wrap`.
 
+The stored key is `namespace:version:key`, with a slot left empty when it is not set: `users::42` for a namespace alone, `:3:42` for a version alone, and plain `42` when neither is set. A namespace or version that is empty or contains `:` throws `invalid-namespace`, so one cache's prefix can never be the start of another's.
+
 ## Other methods
 
 | Method | What it does |
 |---|---|
 | `peek(key)` | Reads the store without calling an action or starting a refresh. Returns `{ value, state, age }`, or `undefined` if nothing readable is stored. |
 | `forget(key)` | Deletes one key. Deciding when a write has made a cached read wrong is up to you. |
-| `clear()` | Empties the whole store, including entries from other caches sharing it. Throws `clear-unsupported` if the store has no `clear`. |
+| `clear()` | Deletes every entry under this cache's prefix through `Store.deletePrefix`. Other caches in the store keep theirs. A cache with no namespace or version has no prefix, so it empties the store like `clearAll()`. |
+| `clearAll()` | Deletes every entry in the store, written by any cache in any process. |
 | `settled()` | Resolves when no background refresh is running. For tests and shutdown. |
+
+`clearAll()` is the one call here that destroys other caches' data. Call it only when emptying the whole store is what the application wants, for example in a test teardown or an admin action, never as a way to reset one cache.
+
+An action still running when `forget`, `clear` or `clearAll` drops its key returns its value to its caller but does not write it, so a late result cannot put back what was just deleted. This covers actions started by the same `Cache` instance only. Another instance with the same namespace, or another process, is not told.
 
 ## Freshness
 
@@ -107,11 +114,11 @@ It reads `no-store`, `no-cache`, `private`, `max-age`, `s-maxage`, `stale-while-
 new MemoryStore({ maxEntries: 1_000 });
 ```
 
-An in-process `Map`. `maxEntries` is required; past it, the least recently used entry is evicted. Entries past their retention are dropped when read. `size` reports how many entries it holds. It takes an optional `now` clock for expiry.
+An in-process `Map`, so each process has its own. `maxEntries` is required; past it, the least recently used entry is evicted. Entries past their retention are dropped when read. `size` reports how many entries it holds. It takes an optional `now` clock for expiry, and implements both `deletePrefix` and `clear`.
 
 ### Your own store
 
-Implement `Store<T>`. Every method is async, so a networked store fits the same interface. `clear` is optional.
+Implement `Store<T>`. Every method is async, so a networked store fits the same interface. `deletePrefix` and `clear` are optional. Without `deletePrefix`, `clear()` on a namespaced cache throws `clear-unsupported`; without `clear`, so does `clearAll()`.
 
 ```ts
 import type { Entry, Store } from "repletes";
@@ -120,11 +127,14 @@ class RedisStore<T> implements Store<T> {
 	async get(key: string): Promise<Entry<T> | undefined> { /* ... */ }
 	async set(key: string, entry: Entry<T>, retainFor: number): Promise<void> { /* ... */ }
 	async delete(key: string): Promise<void> { /* ... */ }
+	async deletePrefix(prefix: string): Promise<void> { /* optional */ }
 	async clear(): Promise<void> { /* optional */ }
 }
 ```
 
 `retainFor` is a hint for when the entry can be thrown away, for example a Redis `PX`. Repletes checks the windows again when it reads, so a store that keeps entries longer is still correct.
+
+`deletePrefix` must delete exactly the keys that start with the prefix. In Redis that is `SCAN` with `MATCH prefix*` and `UNLINK` on each batch. A namespace may contain `*`, `?`, `[` or `\`, so escape those with a backslash before building the pattern, or a namespace like `a*` also clears `ab::`.
 
 A store that throws never fails a call; see [Known quirks](../README.md#known-quirks). The error is reported as a `store-error` event.
 
@@ -139,13 +149,17 @@ The `Codec<T, Wire>` type (`encode` and `decode`) is exported so out-of-process 
 | `hit` | A value was served from the store | `state`, `age` |
 | `miss` | The action produced the value | |
 | `write` | An entry was stored | `retainFor` |
-| `skip` | The freshness policy declined the write | |
+| `skip` | A value was not stored | `reason` |
 | `refresh` | A background refresh finished | `ok` |
 | `served-stale` | A `retained` value was served because the action threw | `age` |
 | `action-error` | The action threw, anywhere | `error`, `background` |
-| `store-error` | A store call threw | `operation`, `error` |
+| `store-error` | A store call threw | `operation`, `namespace`, `error` |
 
 `action-error` fires on a miss, under a retained entry, and behind a stale read, so the upstream failure rate is a single count. `background` is `true` for the refresh case.
+
+`skip` has `reason: "freshness"` when the policy declined the value, and `reason: "invalidated"` when `forget` or `clear` dropped the key while the action ran.
+
+On `store-error`, `operation` is `get`, `set`, `delete`, `deletePrefix` or `clear`, and `namespace` is the cache's. `key` is the full stored key, the prefix for `deletePrefix`, or `""` for `clear`.
 
 ## Errors
 
@@ -155,8 +169,9 @@ Repletes throws only for caller mistakes, as a `RepletesError` (which extends `T
 |---|---|
 | `invalid-windows` | A window is negative, infinite or not a number. |
 | `invalid-key` | The key is not a non-empty string. |
+| `invalid-namespace` | A namespace or version is empty or contains `:`. |
 | `invalid-capacity` | `maxEntries` is not a positive integer. |
-| `clear-unsupported` | `clear()` was called on a store without `clear`. |
+| `clear-unsupported` | The store lacks the method `clear()` or `clearAll()` needs. |
 
 ## `decide(entry, now)`
 

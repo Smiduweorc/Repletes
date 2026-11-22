@@ -76,10 +76,10 @@ How retention and failed refreshes are handled is in [Design and scope](guides/d
 
 ## Known quirks
 
-- Concurrent misses on the same key each call the action. Only background refreshes are deduplicated.
-- `clear()` empties the whole store. If several caches share one store, it clears all of them, whatever their namespace.
-- `MemoryStore` is per process. Two processes with their own `MemoryStore` do not see each other's entries.
-- Store errors do not fail a read. A failed `get` counts as a miss and a failed `set` skips the write; both are reported only through `onEvent`.
+- Concurrent misses on the same key each call the action. Only background refreshes are deduplicated. To share one call between them, wrap the action in Firefly's single-flight.
+- `clear()` drops only this cache's namespace and version, and needs a store with `deletePrefix`; without one it throws `clear-unsupported`. `clearAll()` empties the whole store, including every other cache sharing it.
+- `MemoryStore` is per process. Each worker or replica has its own copy, and a `forget` in one does not reach the others. For one cache across processes, write a store over Redis or similar.
+- Store errors do not fail a read. A failed `get` counts as a miss and a failed `set` skips the write. Both are reported only as `store-error` events, so without an `onEvent` listener a dead store goes unnoticed.
 
 ## Documentation
 

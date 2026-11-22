@@ -14,6 +14,10 @@ export interface MemoryStoreOptions {
  *
  * Eviction here is about space, not about correctness: the read decision is
  * made from the entry's own windows, never from whether this store still has it.
+ *
+ * Entries live in this process only. Several processes (cluster workers,
+ * replicas, serverless instances) each hold an independent copy and never see
+ * each other's writes or `forget` calls; share a networked store for that.
  */
 export class MemoryStore<T = unknown> implements Store<T> {
 	readonly #entries = new Map<string, { entry: Entry<T>; expiresAt: number }>();
@@ -65,6 +69,12 @@ export class MemoryStore<T = unknown> implements Store<T> {
 
 	async delete(key: string): Promise<void> {
 		this.#entries.delete(key);
+	}
+
+	async deletePrefix(prefix: string): Promise<void> {
+		for (const key of [...this.#entries.keys()]) {
+			if (key.startsWith(prefix)) this.#entries.delete(key);
+		}
 	}
 
 	async clear(): Promise<void> {

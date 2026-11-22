@@ -52,7 +52,13 @@ export interface Store<T = unknown> {
 	 */
 	set(key: string, entry: Entry<T>, retainFor: number): Promise<void>;
 	delete(key: string): Promise<void>;
-	/** Optional, and may be O(n) on a store that has to scan a key prefix. */
+	/**
+	 * Optional. Drops every key that starts with `prefix`, and nothing else. A
+	 * namespaced {@link Cache} needs it for `clear()`. May be O(n) on a store
+	 * that has to scan.
+	 */
+	deletePrefix?(prefix: string): Promise<void>;
+	/** Optional. Empties the whole store, whoever wrote to it. */
 	clear?(): Promise<void>;
 }
 
@@ -91,7 +97,12 @@ export type Event =
 	| { type: "hit"; key: string; state: "fresh" | "stale" | "retained"; age: number }
 	| { type: "miss"; key: string }
 	| { type: "write"; key: string; retainFor: number }
-	| { type: "skip"; key: string }
+	/**
+	 * Nothing was written. `freshness` means the policy declined the value;
+	 * `invalidated` means `forget` or `clear` dropped the key while the action
+	 * ran, so writing it back would have undone the drop.
+	 */
+	| { type: "skip"; key: string; reason: "freshness" | "invalidated" }
 	| { type: "refresh"; key: string; ok: boolean }
 	| { type: "served-stale"; key: string; age: number }
 	/**
@@ -101,9 +112,15 @@ export type Event =
 	 * `background` marks the refresh case, which no caller awaited.
 	 */
 	| { type: "action-error"; key: string; error: unknown; background: boolean }
+	/**
+	 * A store call threw and the read carried on without it. `key` is the full
+	 * prefixed key, the prefix for `deletePrefix`, and `""` for `clear`.
+	 * `namespace` is the cache's, so one listener can watch several caches.
+	 */
 	| {
 			type: "store-error";
 			key: string;
-			operation: "get" | "set" | "delete" | "clear";
+			namespace: string | undefined;
+			operation: "get" | "set" | "delete" | "deletePrefix" | "clear";
 			error: unknown;
 	  };
