@@ -1,64 +1,65 @@
 {
-	"name": "repletes",
-	"version": "2.0.0",
-	"description": "A cache policy engine for arbitrary async computations. You supply the key, the store and the windows; repletes decides whether to serve, refresh, replace or rethrow.",
-	"type": "module",
-	"main": "dist/index.js",
-	"types": "dist/types/index.d.ts",
-	"sideEffects": false,
-	"exports": {
-		".": {
-			"types": "./dist/types/index.d.ts",
-			"default": "./dist/index.js"
-		},
-		"./package.json": "./package.json"
-	},
-	"files": [
-		"dist"
-	],
-	"engines": {
-		"node": ">=22"
-	},
-	"scripts": {
-		"build": "tsc",
-		"typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
-		"lint": "eslint .",
-		"lint:fix": "eslint . --fix",
-		"test": "node --import tsx --test \"tests/**/*.test.ts\"",
-		"docs": "typedoc",
-		"changelog": "git-cliff -o CHANGELOG.md",
-		"prepare": "lefthook install"
-	},
-	"keywords": [
-		"cache",
-		"stale-while-revalidate",
-		"stale-if-error",
-		"cache-policy",
-		"swr",
-		"typescript",
-		"esm"
-	],
-	"author": "grml",
-	"license": "ISC",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/Smiduweorc/Repletes.git"
-	},
-	"bugs": {
-		"url": "https://github.com/Smiduweorc/Repletes/issues"
-	},
-	"homepage": "https://github.com/Smiduweorc/Repletes#readme",
-	"devDependencies": {
-		"@commitlint/cli": "^21.2.2",
-		"@commitlint/config-conventional": "^21.2.2",
-		"@eslint/js": "^10.0.1",
-		"@types/node": "^26.4.0",
-		"eslint": "^10.9.1",
-		"git-cliff": "^2.13.1",
-		"lefthook": "^2.1.12",
-		"tsx": "^4.23.13",
-		"typedoc": "^0.28.20",
-		"typescript": "^6.0.3",
-		"typescript-eslint": "^8.68.0"
-	}
+  "name": "repletes",
+  "version": "2.0.1",
+  "description": "A cache policy engine for arbitrary async computations. You supply the key, the store and the windows; repletes decides whether to serve, refresh, replace or rethrow.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/types/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "docs": "typedoc",
+    "changelog": "git-cliff -o CHANGELOG.md",
+    "prepare": "lefthook install"
+  },
+  "keywords": [
+    "cache",
+    "stale-while-revalidate",
+    "stale-if-error",
+    "cache-policy",
+    "swr",
+    "typescript",
+    "esm",
+    "smiduweorc"
+  ],
+  "author": "grml",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Smiduweorc/Repletes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Smiduweorc/Repletes/issues"
+  },
+  "homepage": "https://github.com/Smiduweorc/Repletes#readme",
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.2",
+    "@commitlint/config-conventional": "^21.2.2",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.4.0",
+    "eslint": "^10.9.1",
+    "git-cliff": "^2.13.1",
+    "lefthook": "^2.1.12",
+    "tsx": "^4.23.13",
+    "typedoc": "^0.28.20",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.68.0"
+  }
 }
